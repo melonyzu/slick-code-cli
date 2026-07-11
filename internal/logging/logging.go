@@ -1,6 +1,4 @@
-// Package logging builds Slick Code's structured logger. It is a thin
-// wrapper around the standard library's log/slog; callers use *slog.Logger
-// directly rather than a custom interface.
+// Package logging provides the application's structured logger.
 package logging
 
 import (
@@ -11,9 +9,7 @@ import (
 	"github.com/melonyzu/slick-code-cli/pkg/types"
 )
 
-// New returns a structured logger writing to stderr at the given level.
-// Stdout is reserved for command output, so diagnostic logging never
-// interleaves with it.
+// New returns a logger configured with the requested log level.
 func New(level types.LogLevel) (*slog.Logger, error) {
 	slogLevel, err := toSlogLevel(level)
 	if err != nil {
