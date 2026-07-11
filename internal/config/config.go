@@ -1,8 +1,4 @@
-// Package config loads, validates, and persists Slick Code's
-// configuration. Values resolve from, in ascending order of precedence,
-// built-in defaults, the config file, and environment variables.
-// Credentials never appear here; they live in the auth subsystem's
-// secure storage.
+// Package config loads, validates, and saves Slick Code configuration.
 package config
 
 import (
@@ -20,44 +16,39 @@ import (
 	"github.com/melonyzu/slick-code-cli/pkg/types"
 )
 
-// FileName is the name of Slick Code's configuration file.
+// FileName is the default configuration file name.
 const FileName = "config.yaml"
 
-// envPrefix is stripped from, and the remainder lowercased for, environment
-// variables that override configuration values, e.g. SLICKCODE_LOG_LEVEL
-// becomes the "log_level" key.
+// Environment variables use the SLICKCODE_ prefix.
 const envPrefix = "SLICKCODE_"
 
-// Config holds Slick Code's resolved configuration.
+// Config holds the resolved application configuration.
 type Config struct {
-	// Provider is the AI provider the assistant uses. Empty means the
-	// first-run setup has not completed yet.
+	// Provider is the selected AI provider.
 	Provider types.Provider `koanf:"provider"`
 
-	// Model is the default model requests are sent to.
+	// Model is the default model.
 	Model string `koanf:"model"`
 
-	// LogLevel controls the verbosity of diagnostic output.
+	// LogLevel controls diagnostic logging.
 	LogLevel types.LogLevel `koanf:"log_level"`
 }
 
-// defaults returns a Config populated with Slick Code's built-in defaults.
+// defaults returns the built-in configuration.
 func defaults() Config {
 	return Config{
-		LogLevel: types.LogLevelInfo,
+		LogLevel: types.LogLevelWarn,
 	}
 }
 
-// Exists reports whether a configuration file is present at path.
+// Exists reports whether path exists.
 func Exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
 
-// Load resolves Slick Code's configuration. path is the config file to
-// read; a missing file at path is not an error, it simply leaves the
-// defaults and environment overrides in place. Load does not validate the
-// result — call Config.Validate for that.
+// Load loads configuration from defaults, the config file, and environment
+// variables, in that order.
 func Load(path string) (*Config, error) {
 	k := koanf.New(".")
 
@@ -85,8 +76,7 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Save writes cfg to path, readable only by the current user. Secrets
-// are never part of Config, so the file never holds credentials.
+// Save writes cfg to path.
 func Save(path string, cfg *Config) error {
 	payload, err := goyaml.Marshal(map[string]string{
 		"provider":  cfg.Provider.String(),
@@ -100,26 +90,30 @@ func Save(path string, cfg *Config) error {
 	if err := os.WriteFile(path, payload, 0o600); err != nil {
 		return fmt.Errorf("config: write %s: %w", path, err)
 	}
+
 	return nil
 }
 
-// Validate reports an error of kind types.ErrorKindInvalidConfig if the
-// configuration holds unacceptable values.
+// Validate checks whether the configuration is valid.
 func (c Config) Validate() error {
 	if !c.LogLevel.Valid() {
-		return types.NewError(types.ErrorKindInvalidConfig,
-			fmt.Sprintf("invalid log_level %q (want debug, info, warn, or error)", c.LogLevel))
+		return types.NewError(
+			types.ErrorKindInvalidConfig,
+			fmt.Sprintf("invalid log_level %q (want debug, info, warn, or error)", c.LogLevel),
+		)
 	}
+
 	if c.Provider != "" && !c.Provider.Valid() {
-		return types.NewError(types.ErrorKindInvalidConfig,
-			fmt.Sprintf("invalid provider %q", c.Provider))
+		return types.NewError(
+			types.ErrorKindInvalidConfig,
+			fmt.Sprintf("invalid provider %q", c.Provider),
+		)
 	}
+
 	return nil
 }
 
-// envKey maps an environment variable name, such as SLICKCODE_LOG_LEVEL, to
-// its configuration key, log_level.
+// envKey converts an environment variable name to its configuration key.
 func envKey(name string) string {
-	trimmed := strings.TrimPrefix(name, envPrefix)
-	return strings.ToLower(trimmed)
+	return strings.ToLower(strings.TrimPrefix(name, envPrefix))
 }
