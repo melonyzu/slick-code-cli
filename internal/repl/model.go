@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -17,8 +18,10 @@ import (
 	"github.com/melonyzu/slick-code-cli/pkg/types"
 )
 
-// inputHeight is how many terminal rows the input area occupies.
-const inputHeight = 3
+const (
+	inputHeight        = 3
+	screenChromeHeight = 5
+)
 
 // model is the interactive assistant's Bubble Tea model.
 type model struct {
@@ -34,10 +37,10 @@ type model struct {
 	ta      textarea.Model
 	vp      viewport.Model
 	render  *renderer
-	entries []string // rendered transcript blocks
-	active  *turn    // in-flight assistant response, nil when idle
+	entries []string
+	active  *turn
 
-	history []string // submitted inputs, for ctrl+p/ctrl+n recall
+	history []string
 	histPos int
 
 	width, height int
@@ -48,8 +51,8 @@ type model struct {
 // newModel assembles the UI for an active provider.
 func newModel(ctx context.Context, app *core.App, p provider.Provider, modelID string) *model {
 	ta := textarea.New()
-	ta.Placeholder = "Ask anything — /help for commands"
-	ta.Prompt = "┃ "
+	ta.Placeholder = "Ask something…"
+	ta.Prompt = "> "
 	ta.SetHeight(inputHeight - 1)
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetKeys("ctrl+j")
@@ -148,9 +151,7 @@ func (m *model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, m.updateComponents(msg)
 }
 
-// submit handles Enter: slash commands dispatch, anything else becomes
-// a chat turn. During an in-flight response only /-commands run, so
-// /exit always works.
+// submit handles Enter: slash commands dispatch, anything else becomes a chat turn.
 func (m *model) submit() tea.Cmd {
 	input := strings.TrimSpace(m.ta.Value())
 	if input == "" {
@@ -202,7 +203,7 @@ func (m *model) finishTurn(resp types.Response) tea.Cmd {
 	m.active = nil
 	m.sess.Append(resp.Message)
 
-	m.entries = append(m.entries, m.render.markdown(resp.Message.Text()))
+	m.entries = append(m.entries, m.render.assistant(resp.Message.Text()))
 	m.entries = append(m.entries, m.render.info(fmt.Sprintf(
 		"%s · %d in / %d out tokens", resp.Model,
 		resp.Usage.InputTokens, resp.Usage.OutputTokens)))
@@ -218,9 +219,8 @@ func (m *model) abortTurn(err error) {
 	}
 	m.active = nil
 
-	// Keep whatever streamed before the interruption visible.
 	if partial != "" {
-		m.entries = append(m.entries, m.render.markdown(partial))
+		m.entries = append(m.entries, m.render.assistant(partial))
 	}
 
 	switch {
@@ -235,9 +235,9 @@ func (m *model) abortTurn(err error) {
 // resize adapts the layout to the terminal size.
 func (m *model) resize(msg tea.WindowSizeMsg) tea.Cmd {
 	m.width, m.height = msg.Width, msg.Height
-	m.render = newRenderer(msg.Width)
+	m.render = newRenderer(max(20, msg.Width))
 
-	vpHeight := max(1, msg.Height-inputHeight-2) // header + footer
+	vpHeight := max(1, msg.Height-screenChromeHeight-inputHeight)
 	if !m.ready {
 		m.vp = viewport.New(msg.Width, vpHeight)
 		m.ready = true
@@ -264,15 +264,16 @@ func (m *model) refreshViewport() {
 		return
 	}
 
-	content := strings.Join(m.entries, "\n")
+	blocks := append([]string(nil), m.entries...)
 	if m.active != nil {
-		live := m.active.buf
+		live := strings.TrimSpace(m.active.buf)
 		if live == "" {
-			live = "…"
+			live = terminal.Muted.Render("Thinking…")
 		}
-		content += "\n" + live
+		blocks = append(blocks, terminal.Title.Render("Assistant")+"\n"+m.render.markdown(live))
 	}
-	m.vp.SetContent(content)
+
+	m.vp.SetContent(strings.Join(blocks, "\n\n"))
 	m.vp.GotoBottom()
 }
 
@@ -294,8 +295,7 @@ func (m *model) rememberInput(input string) {
 	m.histPos = len(m.history)
 }
 
-// recallHistory moves through submitted inputs; step is -1 for older,
-// +1 for newer.
+// recallHistory moves through submitted inputs; step is -1 for older, +1 for newer.
 func (m *model) recallHistory(step int) {
 	if len(m.history) == 0 {
 		return
@@ -319,12 +319,41 @@ func (m *model) View() string {
 		return ""
 	}
 	if !m.ready {
-		return "starting…"
+		return terminal.Muted.Render("starting…")
 	}
 
-	header := terminal.Title.Render("slick code") + terminal.Muted.Render(
-		fmt.Sprintf("  %s · %s", m.provName, m.modelID))
-	footer := terminal.Muted.Render("enter send · ctrl+j newline · ctrl+c interrupt · /help")
+	return strings.Join([]string{
+		m.headerView(),
+		m.vp.View(),
+		m.ta.View(),
+		m.footerView(),
+	}, "\n")
+}
 
-	return header + "\n" + m.vp.View() + "\n" + m.ta.View() + "\n" + footer
+func (m *model) headerView() string {
+	snapshot := m.app.Context.Snapshot()
+	project := "workspace"
+	if root := filepath.Base(snapshot.Root); root != "" && root != "." && root != string(filepath.Separator) {
+		project = root
+	}
+
+	meta := fmt.Sprintf("%s • %s", m.provName, m.modelID)
+	if snapshot.Root != "" {
+		meta = fmt.Sprintf("%s • %s • %d files • %d tokens", project, meta, snapshot.IncludedFiles, snapshot.Estimated)
+		if snapshot.Truncated {
+			meta += " • truncated"
+		}
+	} else {
+		meta = fmt.Sprintf("%s • %s", project, meta)
+	}
+
+	return strings.Join([]string{
+		terminal.Title.Render("Slick Code"),
+		terminal.Muted.Render(meta),
+		terminal.Divider.Render(strings.Repeat("─", max(20, m.width))),
+	}, "\n")
+}
+
+func (m *model) footerView() string {
+	return terminal.Muted.Render("Enter send • Ctrl+J newline • Ctrl+C interrupt • /help")
 }
